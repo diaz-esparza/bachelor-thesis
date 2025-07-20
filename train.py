@@ -1,4 +1,5 @@
-from os.path import isfile, join as jo
+from argparse import ArgumentParser
+from os.path import join as jo
 from lightning.pytorch.callbacks import early_stopping
 from torch.utils.data import DataLoader
 
@@ -33,12 +34,49 @@ from data import (
 
 from models.classifiers import GenericClassifier
 
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 ROOT = osp.dirname(__file__)
 OUTPUTS = jo(ROOT, "storage", "outputs")
 CKPT = jo(OUTPUTS, "ckpt")
 torch.set_float32_matmul_precision("high")
+
+PARSER = ArgumentParser(
+    description="Realiza un proceso de entrenamiento y guarda los resultados. "
+    "La configuración del entorno de entrenamiento depende de los parámetros de entrada.",
+)
+
+PARSER.add_argument(
+    "-d",
+    "--datasets",
+    choices=["ham", "siim", "slice", "med"],
+    nargs="+",
+    required=True,
+    help="Conjuntos de datos con los que se evaluará el modelo. "
+    "Para cada arquitectura seleccionada, se entrenará una instancia "
+    "por cada dataset seleccionado.",
+)
+PARSER.add_argument(
+    "-m",
+    "--models",
+    choices=["vit", "densenet", "inception"],
+    nargs="+",
+    required=True,
+    help="Arquitecturas de clasificación a ser entrenadas (una o más). "
+    "Se entrenará cada conjunto de datos con cada arquitectura.",
+)
+PARSER.add_argument(
+    "-e",
+    "--experiment",
+    choices=["base", "global", "dann", "pretrain"],
+    required=True,
+    help="Cada opción corresponde a un experimento ejecutado en el trabajo original. "
+    "'base' corresponde al experimento de referencia, "
+    "'global' se refiere a la primera alteración con un conjunto de datos global, "
+    "'dann' se trata de la segunda alteración con una DANN, y "
+    "'pretrain' ejecutará la rutina compuesta de pre-entrenamiento y ajuste fino detallada "
+    "en la sección 5.3 del informe. Únicamente se elegirá una opción cada vez.",
+)
 
 
 def raw_collate(data: list[tuple[npt.NDArray[np.uint8], int, bool]]):
@@ -510,81 +548,79 @@ def pretrain_xval(
         output["actual_ckpt_path"] = actual_ckpt_path
 
 
-def standard_entrypoint() -> None:
-    model_names = [
-        f"timm/{i}"
-        for i in [
-            # "vgg16.tv_in1k",
-            # "resnet50.a1_in1k",
-            # "vit_small_patch16_224.augreg_in21k_ft_in1k",
-            # "mobilenetv3_small_100.lamb_in1k",
-            # "efficientnet_b4.ra2_in1k",
-            "inception_v3.tv_in1k",
-            # "densenet201.tv_in1k",
-        ]
-    ]
-    xana_kwargs = {
-        "neo": {
-            "train_id": "x_global_re",
+def standard_entrypoint(
+    cores: Iterable[IndexerCore],
+    model_names: Iterable[str],
+    train_id: str,
+    non_global: bool = True,
+    source_da: bool = False,
+) -> None:
+    for c in cores:
+        kwargs = {
+            "train_id": train_id,
             "lr": 5e-4,
             "l2": 0,
             "eps": 1e-8,
-            # "source_da": True,
-            # "non_global": True,
-            "n_items_per_class": 17_000,
-        },
-        "og": {
-            "train_id": "x_global_re",
-            "lr": 5e-4,
-            "l2": 0,
-            "eps": 1e-8,
-            # "source_da": True,
-            # "non_global": True,
-            "n_items_per_class": 17_000,
-        },
-    }[os.environ["XANA_NAME"]]
-    core = {
-        "neo": Core2024(extended=True),
-        "og": CoreMED(),
-    }[os.environ["XANA_NAME"]]
-    indexer = GlobalStratifiedIndexer
+            "non_global": non_global,
+            "source_da": source_da,
+            "n_items_per_class": 340 if isinstance(c, CoreMED) else 17_000,
+        }
 
-    for name in model_names:
-        print(f"TRAINING {core.__class__.__name__} {name}...")
-        batch_size = 32
-        n_folds = 6
-        timm_xval(
-            n_folds,
-            #
-            model_name=name,
-            core=core,
-            **xana_kwargs,
-            image_size=(299, 299) if "inception" in name else (224, 224),
-            batch_size=batch_size,
-            indexer=indexer,
-            gpu_preprocessing=0,
-        )
+        for name in model_names:
+            print(f"TRAINING {c.__class__.__name__} {name}...")
+            timm_xval(
+                n_folds=6,
+                #
+                model_name=name,
+                core=c,
+                **kwargs,
+                # 'inception' can work with a larger image size
+                image_size=(299, 299) if "inception" in name else (224, 224),
+                batch_size=32,
+                indexer=GlobalStratifiedIndexer,
+                gpu_preprocessing=0,
+            )
 
 
-def finetune_entrypoint():
-    model_names = [
-        f"timm/{i}"
-        for i in [
-            # "vit_small_patch16_224.augreg_in21k_ft_in1k",
-            # "inception_v3.tv_in1k",
-            "densenet201.tv_in1k",
-        ]
-    ]
-    train_id = "x_pretrain"
-    cores = {
-        "neo": [Core2024(extended=True)],
-        "og": [CoreMED(), Core2020(extended=True)],
-    }[os.environ["XANA_NAME"]]
-
+def finetune_entrypoint(
+    cores: Iterable[IndexerCore],
+    model_names: Iterable[str],
+):
     for name in model_names:
         for c in cores:
-            pretrain_xval(name, c, train_id, n_folds=6)
+            pretrain_xval(name, c, train_id="pretrain", n_folds=6)
 
 
 if __name__ == "__main__":
-    finetune_entrypoint()
+    args = PARSER.parse_args()
+
+    model_translations = {
+        "inception": "timm/inception_v3.tv_in1k",
+        "vit": "timm/vit_small_patch16_224.augreg_in21k_ft_in1k",
+        "densenet": "timm/densenet201.tv_in1k",
+    }
+    core_translations = {
+        "ham": CoreHAM(),
+        "siim": Core2020(extended=True),
+        "slice": Core2024(extended=True),
+        "med": CoreMED(),
+    }
+
+    model_names = map(model_translations.__getitem__, args.models)
+    cores = map(core_translations.__getitem__, args.datasets)
+
+    if args.experiment == "pretrain":
+        finetune_entrypoint(cores, model_names)
+    else:
+        non_global, source_da = {
+            "base": (True, False),
+            "global": (False, False),
+            "dann": (False, True),
+        }[args.experiment]
+        standard_entrypoint(
+            cores,
+            model_names,
+            args.experiment,
+            non_global,
+            source_da,
+        )
