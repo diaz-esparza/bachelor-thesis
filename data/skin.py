@@ -188,7 +188,7 @@ class CoreMED(IndexerCore):
 class CorePAD(IndexerCore):
     ## A lot of metadata
     METADATA = jo(DATA, "pad-ufes-20", "metadata.csv")
-    DATAFOLDERS = {jo(DATA, "pad-ufes-20", "imgs_part_" + str(i)) for i in {1, 2, 3}}
+    DATAFOLDERS = {jo(DATA, "pad-ufes-20", "imgs_part_" + str(i)) for i in (1, 2, 3)}
 
     def __init__(self) -> None:
         super().__init__()
@@ -217,9 +217,24 @@ class CoreBCN(IndexerCore):
     METADATA = jo(DATA, "bcn20000", "bcn_20k_train.csv")
     DATAFOLDER = jo(DATA, "bcn20000", "bcn_20k_train")
 
+    LEGACY_TRANSLATIONS = {
+        "Nevus": "NV",
+        "Melanoma, NOS": "MEL",
+        "Melanoma metastasis": "MEL",
+        "Seborrheic keratosis": "BKL",
+        "Solar lentigo": "BKL",
+        "Basal cell carcinoma": "BCC",
+        "Solar or actinic keratosis": "AK",
+        "Squamous cell carcinoma, NOS": "SCC",
+        "Dermatofibroma": "DF",
+        "Scar": "DF",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self.df = pd.read_csv(self.METADATA)
+        for v in list(self.LEGACY_TRANSLATIONS.values()):
+            self.LEGACY_TRANSLATIONS[v] = v
 
     @classmethod
     def get_image(cls, id_: str) -> str:
@@ -228,9 +243,19 @@ class CoreBCN(IndexerCore):
     def __call__(self) -> dict[str, list[str]]:
         core: dict[str, list[str]] = {}
         for _, row in self.df.iterrows():
-            name = row["bcn_filename"]
+            try:
+                name = row["isic_id"] + ".jpg"
+            except KeyError:
+                name = row["bcn_filename"]
+
             assert isinstance(name, str)
-            label = str(row["diagnosis"])
+            raw_label = str(row["diagnosis_3"])
+
+            ## That means it's a test sample
+            if raw_label == "nan":
+                continue
+
+            label = self.LEGACY_TRANSLATIONS[raw_label]
 
             if label in core.keys():
                 core[label].append(self.get_image(name))
