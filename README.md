@@ -5,7 +5,7 @@ En este Trabajo, empleamos principalmente PyTorch y Lightning para entrenar arqu
 
 ## Instalación
 
-El programa de momento es únicamente compatible con sistemas Linux, principalmente porque usamos `/dev/shm` para una optimización en el cargado de datos. Para ejecutar el programa en sistemas Windows, el uso de WSL2 debería de funcionar sin mayores problemas.
+El programa de momento es únicamente compatible con sistemas Linux, principalmente porque usamos `/dev/shm` para una optimización en el cargado de datos. Para ejecutar el programa en sistemas Windows, se debería de poder usar WSL2 sin mayores problemas.
 
 Para ejecutar el código y reproducir los resultados del trabajo, lo primero que se necesita es un entorno con `Python3.11`. También se necesitarán instalar los paquetes empleados en el proyecto mediante el siguiente comando:
 
